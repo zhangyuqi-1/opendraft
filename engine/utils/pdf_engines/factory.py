@@ -37,10 +37,10 @@ class PDFEngineFactory:
     """
 
     # Registry of all available engine classes
-    # Only Pandoc/XeLaTeX - cleanest output for academic documents
+    # Pandoc/XeLaTeX preferred; WeasyPrint as fallback
     _ENGINE_CLASSES = [
         PandocLatexEngine,
-    ]
+    ] + ([WeasyPrintEngine] if WEASYPRINT_AVAILABLE else [])
 
     @classmethod
     def create(
@@ -62,9 +62,10 @@ class PDFEngineFactory:
         if engine_type == 'auto':
             return cls._auto_select()
 
-        # Map engine type to class - Pandoc/XeLaTeX only
+        # Map engine type to class
         engine_map = {
             'pandoc': PandocLatexEngine,
+            'weasyprint': WeasyPrintEngine if WEASYPRINT_AVAILABLE else None,
         }
 
         engine_class = engine_map.get(engine_type)

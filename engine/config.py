@@ -47,6 +47,8 @@ class ModelConfig:
         default_factory=lambda: (
             os.getenv('OPENAI_MODEL', 'gpt-4.1-nano')
             if os.getenv('AI_PROVIDER') == 'openai'
+            else os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-6')
+            if os.getenv('AI_PROVIDER') == 'claude'
             else os.getenv('GEMINI_MODEL', 'gemini-3-pro-preview')
         )
     )
@@ -70,6 +72,18 @@ class ModelConfig:
             'gpt-4.1-nano',
         ]
 
+        valid_claude_models = [
+            'claude-opus-4-6',
+            'claude-sonnet-4-6',
+            'claude-haiku-4-5-20251001',
+            'claude-opus-4-5',
+            'claude-sonnet-4-5',
+            'claude-haiku-4-5',
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-haiku-20241022',
+            'claude-3-opus-20240229',
+        ]
+
         if self.provider == 'gemini' and self.model_name not in valid_gemini_models:
             raise ValueError(
                 f"Invalid Gemini model: {self.model_name}. "
@@ -80,6 +94,12 @@ class ModelConfig:
             raise ValueError(
                 f"Invalid OpenAI model: {self.model_name}. "
                 f"Valid options: {', '.join(valid_openai_models)}"
+            )
+
+        if self.provider == 'claude' and self.model_name not in valid_claude_models:
+            raise ValueError(
+                f"Invalid Claude model: {self.model_name}. "
+                f"Valid options: {', '.join(valid_claude_models)}"
             )
 
 
@@ -126,7 +146,8 @@ class AppConfig:
     google_api_key_fallback: str = field(default_factory=lambda: os.getenv('GOOGLE_API_KEY_FALLBACK', ''))
     google_api_key_fallback_2: str = field(default_factory=lambda: os.getenv('GOOGLE_API_KEY_FALLBACK_2', ''))
     google_api_key_fallback_3: str = field(default_factory=lambda: os.getenv('GOOGLE_API_KEY_FALLBACK_3', ''))
-    anthropic_api_key: str = field(default_factory=lambda: os.getenv('ANTHROPIC_API_KEY', ''))
+    anthropic_api_key: str = field(default_factory=lambda: os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_AUTH_TOKEN', ''))
+    anthropic_base_url: str = field(default_factory=lambda: os.getenv('ANTHROPIC_BASE_URL', ''))
     openai_api_key: str = field(default_factory=lambda: os.getenv('OPENAI_API_KEY', ''))
 
     # Sub-configurations

@@ -49,6 +49,7 @@ from utils.output_validators import ValidationResult
 from utils.api_citations.orchestrator import CitationResearcher
 from utils.citation_database import Citation
 from utils.gemini_client import GeminiModelWrapper
+from utils.claude_client import ClaudeModelWrapper, create_claude_client
 from utils.deep_research import DeepResearchPlanner
 from utils.token_tracker import CallStatus
 
@@ -58,26 +59,35 @@ logger = logging.getLogger(__name__)
 
 def setup_model(model_override: Optional[str] = None) -> Any:
     """
-    Initialize and return configured Gemini model wrapper.
+    Initialize and return configured model wrapper (Gemini or Claude).
 
     Args:
         model_override: Optional model name to override config default
 
     Returns:
-        GeminiModelWrapper: Configured model wrapper with generate_content() method
+        GeminiModelWrapper or ClaudeModelWrapper with generate_content() method
 
     Raises:
         ValueError: If API key is missing or model name is invalid
     """
     config = get_config()
+    model_name = model_override or config.model.model_name
 
+    if config.model.provider == 'claude':
+        return create_claude_client(
+            api_key=config.anthropic_api_key,
+            base_url=config.anthropic_base_url,
+            model_name=model_name,
+            temperature=config.model.temperature,
+        )
+
+    # Default: Gemini
     if not config.google_api_key:
         raise ValueError(
             "GOOGLE_API_KEY not found. Set it in .env file or environment variables."
         )
 
     client = genai.Client(api_key=config.google_api_key)
-    model_name = model_override or config.model.model_name
 
     return GeminiModelWrapper(
         client=client,
@@ -186,86 +196,75 @@ def run_agent(
 
         try:
             # Generate LLM response
-            # Note: If Gemini tools (Google Search/URL context) hit rate limits,
-            # we catch the exception and use fallbacks (DataForSEO/OpenPull)
             try:
                 response = model.generate_content(full_prompt)
             except Exception as tool_error:
                 error_str = str(tool_error)
                 # Check if it's a rate limit error (429) from Gemini tools
                 if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
-                    logger.warning(f"Agent '{name}': Gemini tools rate limited - will retry without tools")
-                    # Retry without tools (fallback to direct generation)
-                    # Note: For web search/URL context, we'd need to manually call fallbacks
-                    # This is a simplified retry - full fallback integration would require
-                    # detecting which tool failed and calling appropriate fallback
+                    logger.warning(f"Agent '{name}': tools rate limited - will retry without tools")
                     response = model.generate_content(full_prompt)
                 else:
                     raise  # Re-raise if not a rate limit error
-            
-            # Handle function calls and other edge cases
-            # Check if response has candidates
-            if not response.candidates:
-                raise ValueError(f"Agent '{name}': No candidates in response (likely blocked)")
-            
-            candidate = response.candidates[0]
-            finish_reason = getattr(candidate, 'finish_reason', None)
-            
-            # Check what parts exist in the response BEFORE accessing response.text
-            # This prevents ValueError when response has function calls or no text parts
-            has_text_part = False
-            has_function_call = False
-            
-            if hasattr(candidate, 'content') and candidate.content:
-                for part in candidate.content.parts:
-                    if hasattr(part, 'text') and part.text:
-                        has_text_part = True
-                        break
-                    if hasattr(part, 'function_call'):
-                        has_function_call = True
-            
-            # If no text part exists, try to extract from parts directly
-            output = None
-            
-            if has_text_part:
-                # Safe to use response.text when text part exists
-                try:
-                    output = str(response.text)
-                except ValueError:
-                    # Fallback: extract from parts
-                    if hasattr(candidate, 'content') and candidate.content:
-                        text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
-                        if text_parts:
-                            output = ''.join(text_parts)
-            elif has_function_call:
-                # Function call detected but no text - this is an error
-                raise ValueError(
-                    f"Agent '{name}': Response contains function call but no text content. "
-                    f"Finish reason: {finish_reason}. "
-                    f"This may indicate the model attempted to call a function incorrectly. "
-                    f"Try regenerating or check if tools are properly configured."
-                )
+
+            # --- Claude response (ClaudeModelWrapper already exposes .text) ---
+            if isinstance(model, ClaudeModelWrapper):
+                output = response.text
+                if not output:
+                    raise ValueError(f"Agent '{name}': Empty response from Claude")
             else:
-                # No text part and no function call - check finish_reason
-                if finish_reason == 1:  # STOP (normal) but no text - unusual
+                # --- Gemini response parsing ---
+                # Handle function calls and other edge cases
+                # Check if response has candidates
+                if not response.candidates:
+                    raise ValueError(f"Agent '{name}': No candidates in response (likely blocked)")
+
+                candidate = response.candidates[0]
+                finish_reason = getattr(candidate, 'finish_reason', None)
+
+                # Check what parts exist in the response BEFORE accessing response.text
+                has_text_part = False
+                has_function_call = False
+
+                if hasattr(candidate, 'content') and candidate.content:
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            has_text_part = True
+                            break
+                        if hasattr(part, 'function_call'):
+                            has_function_call = True
+
+                output = None
+
+                if has_text_part:
+                    try:
+                        output = str(response.text)
+                    except ValueError:
+                        if hasattr(candidate, 'content') and candidate.content:
+                            text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
+                            if text_parts:
+                                output = ''.join(text_parts)
+                elif has_function_call:
                     raise ValueError(
-                        f"Agent '{name}': Response has finish_reason=1 (STOP) but no text parts. "
-                        f"This may indicate an empty response or safety filter block."
-                    )
-                elif finish_reason == 10:  # FUNCTION_CALL
-                    raise ValueError(
-                        f"Agent '{name}': Response has finish_reason=10 (FUNCTION_CALL) but no text content. "
-                        f"This indicates an invalid function call attempt."
+                        f"Agent '{name}': Response contains function call but no text content. "
+                        f"Finish reason: {finish_reason}."
                     )
                 else:
-                    raise ValueError(
-                        f"Agent '{name}': No text content in response. "
-                        f"Finish reason: {finish_reason}. "
-                        f"Response may be blocked or empty."
-                    )
-            
-            if not output:
-                raise ValueError(f"Agent '{name}': Unable to extract text from response")
+                    if finish_reason == 1:
+                        raise ValueError(
+                            f"Agent '{name}': Response has finish_reason=1 (STOP) but no text parts."
+                        )
+                    elif finish_reason == 10:
+                        raise ValueError(
+                            f"Agent '{name}': Response has finish_reason=10 (FUNCTION_CALL) but no text content."
+                        )
+                    else:
+                        raise ValueError(
+                            f"Agent '{name}': No text content in response. Finish reason: {finish_reason}."
+                        )
+
+                if not output:
+                    raise ValueError(f"Agent '{name}': Unable to extract text from response")
             
             output = str(output)
 
@@ -299,13 +298,25 @@ def run_agent(
             logger.debug(f"Agent '{name}': Generated {len(output)} chars in {time.time() - start_time:.1f}s")
 
             # Track token usage if tracker is provided
-            if token_tracker and hasattr(response, 'usage_metadata'):
+            if token_tracker and hasattr(response, 'usage_metadata') and response.usage_metadata:
                 try:
                     meta = response.usage_metadata
+                    # Claude: input_tokens / output_tokens
+                    # Gemini: prompt_token_count / candidates_token_count
+                    input_tokens = (
+                        getattr(meta, 'input_tokens', None)
+                        or getattr(meta, 'prompt_token_count', 0)
+                        or 0
+                    )
+                    output_tokens = (
+                        getattr(meta, 'output_tokens', None)
+                        or getattr(meta, 'candidates_token_count', 0)
+                        or 0
+                    )
                     token_tracker.add_call(
                         stage=token_stage or name,
-                        input_tokens=getattr(meta, 'prompt_token_count', 0) or 0,
-                        output_tokens=getattr(meta, 'candidates_token_count', 0) or 0,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
                     )
                 except Exception:
                     pass  # Never break generation for tracking failures

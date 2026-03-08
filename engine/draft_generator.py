@@ -837,6 +837,7 @@ if __name__ == "__main__":
 
     # Other options
     parser.add_argument("--validate", action="store_true", help="Enable strict validation")
+    parser.add_argument("--resume-from", help="Path to checkpoint.json to resume from")
 
     args = parser.parse_args()
 
@@ -870,6 +871,7 @@ if __name__ == "__main__":
             second_examiner=args.second_examiner,
             location=args.location,
             student_id=args.student_id,
+            resume_from=Path(args.resume_from) if args.resume_from else None,
         )
 
         print(f"\n\u2705 Generated:")

@@ -434,7 +434,7 @@ generated_by: "OpenDraft AI - https://github.com/federicodeponte/opendraft"
     if ctx.verbose:
         print("📄 Exporting PDF (professional formatting)...")
 
-    pdf_success = export_pdf(md_file=final_md_path, output_pdf=pdf_path, engine='pandoc')
+    pdf_success = export_pdf(md_file=final_md_path, output_pdf=pdf_path, engine='weasyprint')
 
     if not pdf_success:
         raise RuntimeError("PDF export failed - Professional formatting required!")
